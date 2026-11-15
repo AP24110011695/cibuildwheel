@@ -1,6 +1,7 @@
 import os
 import sys
 
+from cibuildwheel import bashlex_eval
 from cibuildwheel.environment import parse_environment
 
 # this command is equivalent to Unix 'echo', but works on Windows too
@@ -107,3 +108,16 @@ def test_awkwardly_quoted_variable() -> None:
     assert (
         environment_dict.get("VAR2") == "somethinglike thisbut waitbut waitthere is moreand more!"
     )
+
+
+def test_escaped_dollar_before_expansion_positions() -> None:
+    # Regression for #3039: an escaped dollar (a literal $) followed by an
+    # expansion of the same name used to expand at the wrong position - the
+    # escape got expanded and the real expansion stayed literal.
+    env = {"X": "y"}
+    esc = chr(92) + "$X"
+
+    assert bashlex_eval.evaluate(esc + "$X", env) == "$Xy"
+    assert bashlex_eval.evaluate(esc + ":$X", env) == "$X:y"
+    assert bashlex_eval.evaluate("$X" + esc, env) == "y$X"
+    assert bashlex_eval.evaluate("a" + esc + "b$X", env) == "a$Xby"

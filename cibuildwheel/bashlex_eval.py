@@ -71,20 +71,61 @@ def evaluate_node(node: bashlex.ast.node, context: NodeExecutionContext) -> str:
         raise ValueError(msg)
 
 
+def _map_part_word_offsets(
+    raw_span: str, part_offsets: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """
+    Pairs each part's raw-span offsets with its offsets in the unescaped word
+    text.
+
+    bashlex reports expansion positions in raw-input coordinates, while
+    node.word has quotes removed and backslash escapes resolved (a backslash
+    before any character collapses to that character, and quote characters
+    are dropped). Replaying that transformation keeps substitutions aligned
+    even when escaped literals share the word with an expansion.
+    """
+    ends = dict(part_offsets)
+    result: list[tuple[int, int]] = []
+    raw_i = 0
+    word_i = 0
+    while raw_i < len(raw_span):
+        if raw_i in ends:
+            part_len = ends[raw_i] - raw_i
+            result.append((word_i, word_i + part_len))
+            word_i += part_len
+            raw_i = ends[raw_i]
+            continue
+        char = raw_span[raw_i]
+        if char == "\\" and raw_i + 1 < len(raw_span):
+            raw_i += 2
+            word_i += 1
+        elif char in "\"'":
+            raw_i += 1
+        else:
+            raw_i += 1
+            word_i += 1
+    return result
+
+
 def evaluate_word_node(node: bashlex.ast.node, context: NodeExecutionContext) -> str:
     value: str = node.word
 
-    for part in node.parts:
-        part_string = context.input[part.pos[0] : part.pos[1]]
-        part_value = evaluate_node(part, context=context)
+    if not node.parts:
+        return value
 
-        if part_string not in value:
-            msg = f"bash parse failed. part {part_string!r} not found in {value!r}. Word was {node.word!r}. Full input was {context.input!r}"
-            raise RuntimeError(msg)
+    raw_span = context.input[node.pos[0] : node.pos[1]]
+    part_offsets = sorted((p.pos[0] - node.pos[0], p.pos[1] - node.pos[0]) for p in node.parts)
+    mapped = _map_part_word_offsets(raw_span, part_offsets)
 
-        value = value.replace(part_string, part_value, 1)
+    result: list[str] = []
+    prev_end = 0
+    for part, (start, end) in zip(node.parts, mapped, strict=True):
+        result.append(value[prev_end:start])
+        result.append(evaluate_node(part, context=context))
+        prev_end = end
 
-    return value
+    result.append(value[prev_end:])
+    return "".join(result)
 
 
 def evaluate_command_node(node: bashlex.ast.node, context: NodeExecutionContext) -> str:
